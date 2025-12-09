@@ -2,9 +2,14 @@ __pycache__
 *.pyc
 *.pt
 *.png
+*.ipynb
+
+wandb/
+seq/
 
 generator_cache*
 reticl_pretrain_data*
+results*
 
 grade-school-math
 MATH 2

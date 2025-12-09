@@ -88,6 +88,10 @@ class Generator:
             elif "gpt" in cls._model_name:
                 cls._tokenizer.pad_token = cls._tokenizer.eos_token
                 cls._sep_tokens = torch.LongTensor([cls._tokenizer("\n").input_ids[0]] * 2)
+            elif "qwen" in cls._model_name.lower():
+                # Set separator token to hardcoded 271
+                # pad token already set to eos token for Qwen models
+                cls._sep_tokens = torch.LongTensor([271])
             else:
                 raise NotImplementedError(f"Double newline tokenization not implemented for model {cls._model_name}")
             cls._sep_tokens = cls._sep_tokens.to(device)
