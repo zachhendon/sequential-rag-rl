@@ -10,7 +10,8 @@ from reticl.data_loading.pretrain_dataset import PreloadedSample, PretrainDatase
 from reticl.data_loading.reticl_dataset import RetICLDataset, Collator
 from reticl.data_loading.data_types import DatasetConfig
 from reticl.models.retriever import retriever_model
-from reticl.training.train_reticl import get_returns, get_predictions, get_optim
+from reticl.models.generator import VLLMGenerator
+from reticl.training.train_reticl import TrainSeqRAG
 from reticl.utils import TrainOptions
 from reticl.constants import SamplingMethod, Reward
 
@@ -22,6 +23,8 @@ def collect_samples(split: str, dataset_config: DatasetConfig, options_dict: dic
     options = TrainOptions(options_dict)
     assert(options.pt_sample_freq)
     options.sm = SamplingMethod.RANDOM.value
+    generator = VLLMGenerator(options_dict)
+    trainer = TrainSeqRAG(generator, dataset_config)
     dataset = RetICLDataset(dataset_config, split, None, options)
     data_loader = DataLoader(
         dataset,
@@ -34,7 +37,7 @@ def collect_samples(split: str, dataset_config: DatasetConfig, options_dict: dic
     for it in range(options.pt_sample_freq):
         print("Iteration:", it + 1)
         for batch_idx, batch in enumerate(tqdm(data_loader)):
-            predictions, _ = get_predictions(batch, dataset_config)
+            predictions, _ = trainer.get_predictions(batch)
             for i in range(len(predictions)):
                 results.append({
                     "prompt": batch["prompts"][i],
@@ -64,9 +67,11 @@ def pretrain_reticl(dataset_config: DatasetConfig, options_dict: dict):
     else:
         run = None
 
+    generator = VLLMGenerator(options_dict)
+    trainer = TrainSeqRAG(generator, dataset_config)
     retriever = retriever_model(options)
     best_model = retriever_model(options)
-    optim, _, _ = get_optim([retriever], options)
+    optim, _, _ = TrainSeqRAG.get_optim([retriever], options)
 
     # Create train/val datasets/loaders
     with open(f"reticl_pretrain_data_train_{get_suffix(options)}.json") as in_f:
@@ -97,7 +102,7 @@ def pretrain_reticl(dataset_config: DatasetConfig, options_dict: dict):
         retriever.train()
         total_train_loss = 0
         for batch in tqdm(data_loader):
-            returns, _, correct = get_returns(batch, dataset_config, options)
+            returns, _, correct = trainer.get_returns(batch, options)
             returns = returns.view(-1, options.num_examples + 1)[:, 1:].contiguous().view(-1) # Don't use initial state
             value_estimates = retriever.get_vfe(batch["current_sample_encodings"], batch["example_encodings"])
             value_estimates = value_estimates[:, 1:-1] # Don't use initial state or terminal state
@@ -120,7 +125,7 @@ def pretrain_reticl(dataset_config: DatasetConfig, options_dict: dict):
                 val_set.compute_corpus_encodings()
 
             for batch in tqdm(val_loader):
-                returns, _, correct = get_returns(batch, dataset_config, options)
+                returns, _, correct = trainer.get_returns(batch, options)
                 returns = returns.view(-1, options.num_examples + 1)[:, 1:].contiguous().view(-1)
                 value_estimates = retriever.get_vfe(batch["current_sample_encodings"], batch["example_encodings"])
                 value_estimates = value_estimates[:, 1:-1]

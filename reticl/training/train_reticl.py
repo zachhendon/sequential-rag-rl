@@ -169,12 +169,13 @@ class TrainSeqRAG:
             val_num_examples = 0
             val_example_set = set()
             retriever.eval()
-            for batch in tqdm(val_loader):
+            print("VAL SET SIZE: ", len(val_set))
+            self.generator.reset_pbar(len(val_set), "Validation")
+            for batch in val_loader:
                 for example_idx in batch["policy_example_indices"].view(-1):
                     val_example_set.add(example_idx.item())
 
-                _, rewards, _ = self.get_returns(batch, options, train_stats["supp_reward_anneal"])
-                _, correct = self.get_predictions(batch)
+                _, rewards, correct = self.get_returns(batch, options, train_stats["supp_reward_anneal"])
                 val_reward += rewards.detach().cpu().numpy().sum()
                 val_correct += correct.detach().cpu().numpy().sum()
                 val_num_examples += (batch["seq_len"] - 1).sum().item()
@@ -349,23 +350,20 @@ class TrainSeqRAG:
         for epoch in range(starting_epoch, options.epochs):
             # Update hyperparameters
             cur_lr = optimizer.param_groups[0]["lr"]
-            print("LR:", cur_lr)
             if options.sm == SamplingMethod.EPSILON_GREEDY.value:
                 dataset.update_epsilon(options.eg_eps * options.expl_decay_rate ** epoch)
-                print("Epsilon:", dataset.epsilon)
             else:
                 e_coef = options.e_coef * max(1 - (1 - options.expl_decay_rate) * epoch / options.epochs, 0)
-                print("Entropy Coefficient:", e_coef)
             # TODO: do annealing every step instead of every epoch
             if options.anneal_reward:
                 supp_reward_anneal = 1 - epoch / options.epochs
-                print("Supplemental Reward Multiplier:", supp_reward_anneal)
             else:
                 supp_reward_anneal = 1.0
 
             # Sample batch from dataset - example retrieval is also done here (__getitem__ in RetICLDataset)
             train_stats = self.reset_train_stats(epoch, cur_lr, supp_reward_anneal)
-            for batch_idx, raw_batch in enumerate(tqdm(data_loader)):
+            self.generator.reset_pbar(len(dataset), f"Epoch {epoch+1}/{options.epochs}")
+            for batch_idx, raw_batch in enumerate(data_loader):
                 retriever.train()
                 batch = collator(raw_batch)
                 batch_size, max_seq_len = batch["example_encodings"].shape[:2]

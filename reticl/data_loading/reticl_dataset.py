@@ -123,8 +123,6 @@ class RetICLDataset(TorchDataset):
         encoder = encoder or self.encoder
         batch_size = 10
         it = range(0, len(samples), batch_size)
-        if show_progress:
-            it = tqdm(it)
         for batch_start_idx in it:
             batch = samples[batch_start_idx : batch_start_idx + batch_size]
             if self.options.encoder_model_type == EncoderModelType.SBERT.value:
