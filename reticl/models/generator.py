@@ -1,9 +1,8 @@
 import json
 import os
-from typing import List, TypedDict, Optional
+from typing import List, TypedDict
 from vllm import LLM, SamplingParams
 from reticl.utils import TrainOptions
-import time
 from tqdm import tqdm
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"

@@ -5,16 +5,13 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-from tqdm import tqdm
 import wandb
-# import nltk
 
 from reticl.models.retriever import retriever_model, Retriever
 from reticl.models.generator import VLLMGenerator
 from reticl.data_loading.data_types import DatasetConfig
 from reticl.data_loading.reticl_dataset import RetICLDataset, Collator, CollatedBatch, filter_batch
 from reticl.training.replay_buffer import ReplayBuffer
-from reticl.evaluate import evaluate_reticl
 from reticl.constants import SamplingMethod, RLAlgorithm, Reward, LRSchedule
 from reticl.utils import TrainOptions, device, is_pg
 
@@ -35,7 +32,6 @@ class TrainSeqRAG:
                 prompts = batch["prompts"]
             else:
                 prompts = [sub_prompts[step] for sub_prompts in batch["sub_prompts"]]
-            # predictions = Generator.generate(prompts)
             predictions = generator.generate(prompts)
         if dataset_config.get("check_correct_batch"):
             correct = dataset_config["check_correct_batch"](
@@ -61,21 +57,6 @@ class TrainSeqRAG:
                 ppl = torch.tensor([-pred["nll"] for pred in predictions]).exp()
                 cr_coef = options.cr_coef * anneal
                 rewards = 2 * (correct * (1 - cr_coef) + ppl * cr_coef) - 1
-
-            # elif options.reward == Reward.EXACT_AND_BLEU.value:
-            #     # Calculate bleu score on the generated solutions
-            #     bleu = torch.Tensor([
-            #         nltk.translate.bleu([target], pred["text"])
-            #         for pred, target in zip (predictions, batch["labels"])
-            #     ])
-            #     # Half of reward comes from bleu and other half from final correctness
-            #     rewards = correct + bleu - 1
-
-        # Reward is inverse perplexity assigned to label given the context
-        # elif options.reward == Reward.PPL.value:
-        #     nlls = Generator.get_nll(**batch)
-        #     rewards = 2 * torch.exp(-nlls) - 1
-        #     correct = None
 
         return rewards, correct
 
@@ -652,9 +633,3 @@ class TrainSeqRAG:
                 if options.rl_algo == RLAlgorithm.DSAC.value:
                     for critic_scheduler in critic_schedulers:
                         critic_scheduler.step()
-
-        # Save and evaluate final model
-        final_model = best_model if options.save_best else retriever
-        if not options.save_best:
-            torch.save(final_model.state_dict(), f"{options.model_name}.pt")
-        evaluate_reticl(run, self.dataset_config, final_model, dev_split, options)
