@@ -1,7 +1,7 @@
 import argparse
 import torch
 
-from reticl.training.train_reticl import train_reticl
+from reticl.training.train_reticl import TrainSeqRAG
 from reticl.training.pretrain_reticl import pretrain_reticl, collect_samples
 from reticl.training.train_gpt2_encoder import finetune_gpt2
 from reticl.training.train_bert_encoder import finetune_bert
@@ -17,7 +17,7 @@ from reticl.datasets.ag_news import AGNEWS_CONFIG
 from reticl.datasets.math import MATH_CONFIG
 from reticl.datasets.svamp import SVAMP_CONFIG
 from reticl.datasets.mtop import MTOP_CONFIG
-from reticl.models.generator import GeneratorCM
+from reticl.models.generator import VLLMGenerator
 from reticl.constants import Datasets, RLAlgorithm, SamplingMethod, Reward, EncoderModelType, ModelType, Pooling, Init, LRSchedule
 from reticl.utils import initialize_seeds, device, TrainOptions
 
@@ -143,13 +143,18 @@ def main():
 
     dataset_config = get_dataset_config(arg_dict)
     if args.train or args.eval or args.create_pretrain_dataset:
-        with GeneratorCM(arg_dict): # Load/save generator prediction cache on program start/exit
-            if args.train:
-                train_reticl(dataset_config, "train", "dev", arg_dict)
-            if args.eval:
-                evaluate(dataset_config, args.eval, arg_dict)
-            if args.create_pretrain_dataset:
-                collect_samples(args.create_pretrain_dataset, dataset_config, arg_dict)
+        # with GeneratorCM(arg_dict): # Load/save generator prediction cache on program start/exit
+        # with VLLMGeneratorCM(arg_dict):
+        #     if args.train:
+        #         train_reticl(dataset_config, "train", "dev", arg_dict)
+        #     if args.eval:
+        #         evaluate(dataset_config, args.eval, arg_dict)
+        #     if args.create_pretrain_dataset:
+        #         collect_samples(args.create_pretrain_dataset, dataset_config, arg_dict)
+        generator = VLLMGenerator(arg_dict)
+        if args.train:
+            trainer = TrainSeqRAG(generator, dataset_config)
+            trainer.train("train", "dev", arg_dict)
     if args.pretrain:
         pretrain_reticl(dataset_config, arg_dict)
     if args.finetune_gpt2:
