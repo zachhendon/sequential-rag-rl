@@ -29,7 +29,9 @@ class VLLMGenerator:
         print(f"max_gen_tokens: {self.options.max_gen_tokens}")
         self.llm = LLM(model=self.model_name, gpu_memory_utilization=0.3)
         self.sampling_params = SamplingParams(
-            max_tokens=self.options.max_gen_tokens, temperature=0.0
+            max_tokens=self.options.max_gen_tokens,
+            temperature=0.0,
+            repetition_penalty=1.1,
         )
 
     def _load_disk_cache(self, cache_filename: str):
@@ -53,7 +55,7 @@ class VLLMGenerator:
             for prompt, value in new_cache_items.items():
                 entry = {"prompt": prompt, "text": value["text"], "nll": value["nll"]}
                 cache_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    
+
     def reset_pbar(self, train_size: int, desc: str = "Generating"):
         if self.pbar is not None:
             self.pbar.close()
@@ -63,13 +65,17 @@ class VLLMGenerator:
         self._update_pbar_description()
 
     def _update_pbar_description(self):
-        base_desc = self.pbar.desc.split(' (')[0]  # Get base description without cache info
+        base_desc = self.pbar.desc.split(" (")[0]
         if self.cached_count > 0 and self.uncached_count > 0:
-            self.pbar.set_description(f"{base_desc} (cached: {self.cached_count}, generated: {self.uncached_count})")
+            self.pbar.set_description(
+                f"{base_desc} (cached: {self.cached_count}, generated: {self.uncached_count})"
+            )
         elif self.cached_count > 0:
             self.pbar.set_description(f"{base_desc} (all {self.cached_count} cached)")
         elif self.uncached_count > 0:
-            self.pbar.set_description(f"{base_desc} (all {self.uncached_count} generated)")
+            self.pbar.set_description(
+                f"{base_desc} (all {self.uncached_count} generated)"
+            )
 
     def generate(self, prompts: List[str]):
         uncached_prompts = [

@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import wandb
+import re
 
 from reticl.models.retriever import retriever_model, Retriever
 from reticl.models.generator import VLLMGenerator
@@ -19,6 +20,51 @@ class TrainSeqRAG:
     def __init__(self, generator: VLLMGenerator, dataset_config: DatasetConfig):
         self.generator = generator
         self.dataset_config = dataset_config
+    
+    def _construct_judge_prompts(self, batch: CollatedBatch, predictions: List[dict]):
+        prompts = []
+        for meta, pred in zip(batch["meta_data"], predictions):
+            # TODO: assumes GSM8K dataset for now
+            question = meta["question"]
+            answer = meta["answer"]
+            model_response = pred["text"]
+            prompt = (
+                f"### Role\n"
+                f"You are an expert evaluator for a question answering system\n\n"
+                f"### Instructions\n"
+                f"Your task is to evaluate the model response based on the user question, the correct answer, and the model response and give a score between 0 and 100. "
+                f"100 is the highest score and reflects a perfect answer with perfect reasoning. "
+                f"0 is the lowest score and reflects a completely incorrect answer with no progress towards the correct answer. "
+                f"A score of 50 is a mediocre score and reflects an answer that is partially correct with some key mistakes. "
+                f"The model should aim to get the correct final answer and logiclly explain every step accurately.\n\n"
+                f"### Output format\n"
+                f"Your response should consist of only these two sections: reasoning and score. The response should end once you have provided the final score. "
+                f"Your reasoning should be focused and logical. The score should be solely based on the accuracy and reasoning of the response and no other factors.\n"
+                f"1. Reasoning: Explain your thinking process and explain what the model did well and what it did poorly. "
+                f"During the reasoning process, you should generate a score and then explain your reasoning for that score. "
+                f"Explain why you gave the response that specific score and why it is not higher or lower. Try to keep the reasoning concise and to the point.\n"
+                f"2. Score: Give a final score between 0 and 100 based on the reasoning. "
+                f"The output format of the score should be a single integer between 0 and 100 and it should be wrapped in <score> tags. "
+                f"Examples: <score>90</score>, <score>0</score>, <score>40</score>\n"
+                f"3. Output verification: Verify that you have provided a score for the response and that it is wrapped in <score> tags.\n\n"
+                f"### Input data\n"
+                f"User question: {question}\n"
+                f"Correct answer: {answer}\n"
+                f"Model response: {model_response}\n\n"
+                f"### Evaluation\n"
+            )
+            prompts.append(prompt)
+        return prompts
+    
+    def _extract_judge_score(self, response: str):
+        score_match = re.findall(r"<score>(\d+)</score>", response["text"])
+        if len(score_match) > 0:
+            score = int(score_match[-1]) # extract the last score if there are multiple
+        else:
+            score = 50
+        if score > 100 or score < 0:
+            score = 50
+        return (score - 50) / 50
 
     def get_predictions(self, batch: CollatedBatch, step: int = None, generator=None, dataset_config=None):
         # Generate predictions given retrieved context and check correctness
@@ -46,19 +92,30 @@ class TrainSeqRAG:
     def get_rewards(self, batch: CollatedBatch, options: TrainOptions, device: torch.device, anneal: float = 1.0, step: int = None, generator=None, dataset_config=None):
         rewards = None
 
-        if options.reward in (Reward.EXACT.value, Reward.CONF.value, Reward.EXACT_AND_BLEU.value):
+        if options.reward in (Reward.EXACT.value, Reward.CONF.value, Reward.EXACT_AND_BLEU.value, Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
             predictions, correct = self.get_predictions(batch, step, generator, dataset_config)
+            correct = correct.to(device)
 
             if options.reward == Reward.EXACT.value:
                 # Reward is 1 if prediction is correct, -1 otherwise
                 rewards = 2 * correct - 1
-                rewards = rewards.to(device)
 
             elif options.reward == Reward.CONF.value:
                 ppl = torch.tensor([-pred["nll"] for pred in predictions]).exp()
                 cr_coef = options.cr_coef * anneal
                 rewards = 2 * (correct * (1 - cr_coef) + ppl * cr_coef) - 1
+            elif options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
+                judge_prompts = self._construct_judge_prompts(batch, predictions)
+                judge_responses = self.generator.generate(judge_prompts)
+                judge_scores = [self._extract_judge_score(response) for response in judge_responses]
+                rewards = torch.tensor(judge_scores).to(device)
 
+                if options.reward == Reward.JUDGE_EXACT.value:
+                    # Take a weighted average ofthe judge score and the correct reward
+                    cr_coef = options.cr_coef * anneal
+                    correct_rewards = 2 * correct - 1
+                    rewards = correct_rewards * (1 - cr_coef) + rewards * cr_coef
+            rewards = rewards.to(device)
         return rewards, correct
 
     def get_returns(self, batch: CollatedBatch, options: TrainOptions, anneal: float = 1.0, train: bool = False, generator=None, dataset_config=None):
@@ -152,7 +209,10 @@ class TrainSeqRAG:
             val_num_examples = 0
             val_example_set = set()
             retriever.eval()
-            self.generator.reset_pbar(len(val_set), "Validation")
+            pbar_len = len(val_set)
+            if options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
+                pbar_len = len(val_set) * 2
+            self.generator.reset_pbar(pbar_len, "Validation")
             for batch in val_loader:
                 for example_idx in batch["policy_example_indices"].view(-1):
                     val_example_set.add(example_idx.item())
@@ -348,6 +408,8 @@ class TrainSeqRAG:
                 pbar_len = len(dataset) * (options.num_examples + 1)
             else:
                 pbar_len = len(dataset)
+            if options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
+                pbar_len *= 2
             self.generator.reset_pbar(pbar_len, f"Epoch {epoch+1}/{options.epochs}")
             for batch_idx, raw_batch in enumerate(data_loader):
                 retriever.train()

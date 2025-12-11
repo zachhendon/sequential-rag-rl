@@ -47,6 +47,8 @@ class Reward(Enum):
     EXACT = "exact"
     CONF = "conf"
     EXACT_AND_BLEU = "exact_and_bleu"
+    JUDGE = "judge"
+    JUDGE_EXACT = "judge_exact"
 
 class Pooling(Enum):
     MEAN = "mean"
