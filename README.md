@@ -9,7 +9,7 @@ Models RAG retrieval as a sequential decision making process. This project uses 
 Create and activate a Conda environment with python 3.11:
 
 ```
-conda create new -n sequential-rag-rl pytho=3.11
+conda create -n sequential-rag-rl python=3.11
 conda activate sequential-rag-rl
 ```
 
