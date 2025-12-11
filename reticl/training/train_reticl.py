@@ -29,7 +29,7 @@ class TrainSeqRAG:
             predictions = batch["outputs"]
         else:
             if step is None:
-                prompts = batch["prompts"]
+                prompts = batch["first_prompts"]
             else:
                 prompts = [sub_prompts[step] for sub_prompts in batch["sub_prompts"]]
             predictions = generator.generate(prompts)
@@ -43,7 +43,7 @@ class TrainSeqRAG:
             ])
         return predictions, correct
 
-    def get_rewards(self, batch: CollatedBatch, options: TrainOptions, anneal: float = 1.0, step: int = None, generator=None, dataset_config=None):
+    def get_rewards(self, batch: CollatedBatch, options: TrainOptions, device: torch.device, anneal: float = 1.0, step: int = None, generator=None, dataset_config=None):
         rewards = None
 
         if options.reward in (Reward.EXACT.value, Reward.CONF.value, Reward.EXACT_AND_BLEU.value):
@@ -52,6 +52,7 @@ class TrainSeqRAG:
             if options.reward == Reward.EXACT.value:
                 # Reward is 1 if prediction is correct, -1 otherwise
                 rewards = 2 * correct - 1
+                rewards = rewards.to(device)
 
             elif options.reward == Reward.CONF.value:
                 ppl = torch.tensor([-pred["nll"] for pred in predictions]).exp()
@@ -63,25 +64,26 @@ class TrainSeqRAG:
     def get_returns(self, batch: CollatedBatch, options: TrainOptions, anneal: float = 1.0, train: bool = False, generator=None, dataset_config=None):
         # Calculate rewards and returns for batch - rewards given at eos actions
         batch_size, max_seq_len = batch["example_encodings"].shape[:2]
-        final_rewards, correct = self.get_rewards(batch, options, anneal, None, generator, dataset_config) # (N)
-        rewards = torch.zeros((batch_size, max_seq_len), device=device) # (N x L)
-        rewards[torch.arange(batch_size), batch["seq_len"] - 1] = final_rewards.to(device)
-        # Optionally prompt at each step to get intermediate rewards
-        if (train and options.int_reward_multi) or options.int_reward_sim:
-            sub_reward_coef = anneal / options.num_examples
+
+        if train and options.int_reward_margin:
+            # Compute returns as discounted marginal rewards
+            rewards = torch.zeros((batch_size, max_seq_len), device=device)
+            returns = torch.zeros((batch_size, max_seq_len), device=device)
+
+            cur_rewards, _ = self.get_rewards(batch, options, device, step=None, generator=self.generator, dataset_config=self.dataset_config)
             for step in range(max_seq_len - 1):
-                sub_batch_mask = step < batch["seq_len"] - 1
-                sub_batch = filter_batch(batch, sub_batch_mask)
-                if train and options.int_reward_multi:
-                    sub_rewards, _ = self.get_rewards(sub_batch, options, anneal, step, generator, dataset_config)
-                    rewards[sub_batch_mask, step] += sub_reward_coef * sub_rewards.to(device)
-                if options.int_reward_sim:
-                    sim_rewards = 2 * sub_batch["example_similarity"][:, step] - 1
-                    rewards[sub_batch_mask, step] += sub_reward_coef * sim_rewards
-        returns = rewards.clone()
-        for idx in range(max_seq_len - 2, -1, -1):
-            returns[:, idx] += options.gamma * returns[:, idx + 1]
-        returns = returns.view(-1) # (N * L)
+                new_rewards, correct = self.get_rewards(batch, options, device, step=step, generator=self.generator, dataset_config=self.dataset_config)
+                rewards[:, step] = new_rewards
+                marginal_rewards = new_rewards - cur_rewards
+                returns[:, step] = marginal_rewards * options.gamma ** step
+                cur_rewards = new_rewards
+        else:
+            # Just compute the final reward
+            final_rewards, correct = self.get_rewards(batch, options, device, anneal, max_seq_len - 2, generator, dataset_config)
+            rewards = torch.zeros((batch_size, max_seq_len), device=device)
+            rewards[torch.arange(batch_size), batch["seq_len"] - 1] = final_rewards
+            returns = rewards.clone()
+        returns = returns.view(-1)
         return returns, rewards, correct
 
     def get_td_error(self, value_estimates: torch.Tensor, rewards: torch.Tensor, options: TrainOptions):
@@ -150,7 +152,6 @@ class TrainSeqRAG:
             val_num_examples = 0
             val_example_set = set()
             retriever.eval()
-            print("VAL SET SIZE: ", len(val_set))
             self.generator.reset_pbar(len(val_set), "Validation")
             for batch in val_loader:
                 for example_idx in batch["policy_example_indices"].view(-1):
@@ -343,7 +344,11 @@ class TrainSeqRAG:
 
             # Sample batch from dataset - example retrieval is also done here (__getitem__ in RetICLDataset)
             train_stats = self.reset_train_stats(epoch, cur_lr, supp_reward_anneal)
-            self.generator.reset_pbar(len(dataset), f"Epoch {epoch+1}/{options.epochs}")
+            if options.int_reward_margin:
+                pbar_len = len(dataset) * (options.num_examples + 1)
+            else:
+                pbar_len = len(dataset)
+            self.generator.reset_pbar(pbar_len, f"Epoch {epoch+1}/{options.epochs}")
             for batch_idx, raw_batch in enumerate(data_loader):
                 retriever.train()
                 batch = collator(raw_batch)

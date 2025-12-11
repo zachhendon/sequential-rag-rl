@@ -108,8 +108,9 @@ def main():
     parser.add_argument("--save_best", type=bool_type, help="Save best model based on validation reward, otherwise save model at last epoch")
     # Rewards
     parser.add_argument("--reward", type=str, choices=[reward.value for reward in Reward], help="Reward function")
-    parser.add_argument("--int_reward_multi", type=bool_type, help="Get intermediate reward by prompting at each step")
-    parser.add_argument("--int_reward_sim", type=bool_type, help="Get intermediate reward by input similarity")
+    parser.add_argument("--int_reward_multi", action="store_true", help="Get intermediate reward by prompting at each step")
+    parser.add_argument("--int_reward_sim", action="store_true", help="Get intermediate reward by input similarity")
+    parser.add_argument("--int_reward_margin", action="store_true", help="Get intermediate reward by input margin")
     parser.add_argument("--anneal_reward", type=bool_type, help="Anneal supplemental reward coefficient over training")
     # Model
     parser.add_argument("--model_type", type=str, choices=[mt.value for mt in ModelType], help="Type of RetICL model to use")

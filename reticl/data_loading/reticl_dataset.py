@@ -1,6 +1,5 @@
 from typing import TypedDict, List, Optional
 import random
-from tqdm import tqdm
 import torch
 import numpy as np
 from torch.utils.data import Dataset as TorchDataset
@@ -375,6 +374,7 @@ class RetICLDataset(TorchDataset):
         sub_prompts = []
         if self.prompt_prefix:
             prompt += self.prompt_prefix + "\n\n"
+        first_prompt = prompt + cur_sample["lm_context"]
         for example in examples:
             prompt += example["lm_context"] + example["lm_label"] + "\n\n"
             sub_prompts.append(prompt + cur_sample["lm_context"])
@@ -391,6 +391,7 @@ class RetICLDataset(TorchDataset):
             "prompt": prompt,
             "label": cur_sample["lm_label"],
             "meta_data": cur_sample["meta_data"],
+            "first_prompt": first_prompt,
             "sub_prompts": sub_prompts,
             "example_similarity": example_similarity,
             "current_sample_encoding": cur_sample.get("context_encoding"),
@@ -412,6 +413,7 @@ class Collator():
             "labels": [sample["label"] for sample in batch],
             "outputs": [sample["output"] for sample in batch] if batch[0].get("output") else None,
             "meta_data": [sample["meta_data"] for sample in batch],
+            "first_prompts": [sample["first_prompt"] for sample in batch],
             "sub_prompts": [sample["sub_prompts"] for sample in batch],
             "example_similarity": pad_sequence(
                 [sample["example_similarity"] for sample in batch],
