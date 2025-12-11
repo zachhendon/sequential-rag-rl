@@ -1,11 +1,63 @@
-# RetICL
-[RetICL (Retrieval for In-Context Learning)](https://arxiv.org/abs/2305.14502) is a reinforcement learning-based method for the joint retrieval of in-context learning examples. The primary component is a recurrent neural network that jointly represents a problem and a group of examples, along with a bilinear activation that ranks subsequent examples. We also introduce a confidence-based reward where the perplexity of the generated solution is used as a proxy for the quality of the reasoning.
+# Sequential RL RAG
 
-## Citation
-If you found this code or these ideas useful, please cite our paper!
+Models RAG retrieval as a sequential decision making process. This project uses an RL agent with dense intermediate marginal rewards.
+
+## Setup
+
+### Python Environment
+
+Create and activate a Conda environment with python 3.11:
+
+```
+conda create new -n sequential-rag-rl pytho=3.11
+conda activate sequential-rag-rl
+```
+
+Install dependencies with pip:
+
+```
+pip install -r requirements.txt
+```
+
+### Data
+
+Currenty, we have only done tests with GSM8K. [Download the dataset](https://github.com/openai/grade-school-math) and place the folder in this repo's root folder.
+
+## Run
+
+Due to optimizations to LLM inference (vLLM + caching), training will take around a few hours for the baseline case on a 3090 GPU using Qwen-0.5B. Implementations using intermediate rewards or LLM-as-a-judge will take longer because more LLM generations are required for the reward calculations.
+
+### Training:
+
+The reward method is our primary modification. Intermediate rewards can be enabled by adding `--int_reward_margin` to the command and other reward calculations can be selected with the `--reward` argument. The base setup is to train for 5000 examples per epoch for the default 50 epochs. The model will be stored by the value passed into the `--model_name` argument. We use Qwen-2.5 models for all of our experiments; other model sizes (e.g. 1.5B, 3B, 7B) can be tested by changing `--generator_model`.
+
+```
+# baseline - no intermediate rewards
+python3 run.py --train --rl_algo ppo_simple --reward exact --dataset gsm8k --model_name gsm8k_ppo_base --generator_model Qwen/Qwen2.5-0.5B-Instruct --e_coef .1 --batch_size 128 --train_size 5000 --corpus_size 200 --soft_prompt_len 20 --val_size 500 --wandb
+
+# intermediate marginal rewards
+python3 run.py --train --rl_algo ppo_simple --reward exact --int_reward_margin --gamma 0.9 --dataset gsm8k --model_name gsm8k_ppo_int -generator_model Qwen/Qwen2.5-0.5B-Instruct --e_coef .1 --batch_size 128 --train_size 5000 --corpus_size 200 --soft_prompt_len 20 --val_size 500 --wandb
+```
+
+### Test:
+
+The retriever's sampling method can be changed using the `--sm` argument. The default is `softmax`, but it can also be evaluated using `vf` for a value-function beam-search approach. We can also get a good baseline of the generator model and dataset using the `exhaustive` sampling method (to make this tractable we reduce the corpus size and number of documents retrieved).
+
+```
+# policy evaluation
+python3 run.py --eval test --rl_algo ppo_simple --dataset gsm8k --model_name <MODEL_NAME> --generator_model Qwen/Qwen2.5-0.5B-Instruct --batch_size 128 --soft_prompt_len 20 --wandb
+
+# baseline exhaustive evaluation
+python3 run.py --eval test --dataset gsm8k --generator_model Qwen/Qwen2.5-0.5B-Instruct --batch_size 128 --soft_prompt_len 20 --sm exhaustive --val_corpus_size 100 --num_examples 1 --wandb
+```
+
+## Ackowledgements
+
+This project is built upon the work proposed in **RetICL** (Scarlatos & Lan, 2024). We appreciate the authors for open-sourcing their code.
+
 ```
 @misc{scarlatos2024reticl,
-      title={RetICL: Sequential Retrieval of In-Context Examples with Reinforcement Learning}, 
+      title={RetICL: Sequential Retrieval of In-Context Examples with Reinforcement Learning},
       author={Alexander Scarlatos and Andrew Lan},
       year={2024},
       eprint={2305.14502},
@@ -13,77 +65,3 @@ If you found this code or these ideas useful, please cite our paper!
       primaryClass={cs.CL}
 }
 ```
-
-## Setup
-
-### Python Environment
-Ensure you have Python3 installed (this code was tested on v3.9.1).
-
-Create and activate a virtual environment:
-```
-python3 -m venv <env_name>
-source <env_name>/bin/activate
-```
-
-Install dependencies with pip:
-```
-python3 -m pip install -r requirements.txt
-```
-
-### OpenAI API Keys
-
-For GPT-3 and Codex models, you need an API key(s) from https://openai.com/api/. Set it in your environment:
-```
-export OPENAI_API_KEYS="<your key 1>,<your key 2>,..."
-```
-
-### Data
-
-TabMWP: https://github.com/lupantech/PromptPG/tree/main/data/tabmwp
-
-GSM8K: https://github.com/openai/grade-school-math
-
-QASC: http://data.allenai.org/downloads/qasc/qasc_dataset.tar.gz
-
-CommonsenseQA: https://www.tau-nlp.sites.tau.ac.il/commonsenseqa
-
-ECQA: https://github.com/dair-iitd/ECQA-Dataset
-
-SVAMP: https://github.com/arkilpatel/SVAMP
-
-Place those folders in this repo's root folder.
-
-## Run
-
-You can see all options by running `python3 run.py --help`. Default values can be found in the `TrainOptions` constructor in `utils.py`.
-
-
-### Examples
-
-Train:
-```
-python3 run.py --train --rl_algo ppo_simple --dataset gsm8k --model_name gsm8k_ppo --e_coef .1 --train_size 5000 --corpus_size 200 --soft_prompt_len 20 --val_size 500 --wandb
-```
-
-Test:
-```
-python3 run.py --eval test --rl_algo ppo_simple --dataset gsm8k --model_name gsm8k_ppo --soft_prompt_len 20 --wandb
-```
-
-Baselines:
-```
-python3 run.py --eval test --sm random --dataset gsm8k
-python3 run.py --eval test --sm sim --dataset gsm8k
-python3 run.py --eval test --sm complex --dataset gsm8k
-```
-
-LSTM Classifier Baseline:
-```
-python3 run.py --create_pretrain_dataset --pt_sample_freq 20 --dataset gsm8k
-python3 run.py --pretrain --pt_sample_freq 20 --dataset gsm8k --pt_model_name gsm8k_lstm_classifier
-python3 run.py --eval test --sm vf --dataset gsm8k --model_name gsm8k_lstm_classifier
-```
-
-## External Code
-
-Files in the `promptPG` folder are copied from the repo https://github.com/lupantech/PromptPG. The associated license is copied to `promptPG/LICENSE.md`.
