@@ -495,8 +495,9 @@ class TrainSeqRAG:
                     ratio = cur_policy_probs / old_policy_probs
                     previous_model.load_state_dict(retriever.state_dict()) # Copy model for next iteration
 
-                    # Get estimated advantage
+                    # Get batch-normalized estimated advantage
                     advantage = self.get_gae(value_estimates, rewards, options)
+                    advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
                     # Get clip loss
                     clip_loss = -torch.min(ratio * advantage, torch.clip(ratio, 1 - options.ppo_eps, 1 + options.ppo_eps) * advantage)
