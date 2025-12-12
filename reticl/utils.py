@@ -71,6 +71,7 @@ class TrainOptions:
         self.int_reward_multi: bool = options_dict.get("int_reward_multi", False)
         self.int_reward_sim: bool = options_dict.get("int_reward_sim", False)
         self.int_reward_margin: bool = options_dict.get("int_reward_margin", False)
+        self.int_reward: bool = options_dict.get("int_reward", False)
         self.hidden_size: int = options_dict.get("hidden_size", 800)
         self.dropout: float = options_dict.get("dropout", 0.0)
         self.v_coef: float = options_dict.get("v_coef", 0.5)

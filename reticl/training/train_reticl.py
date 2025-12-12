@@ -101,7 +101,7 @@ class TrainSeqRAG:
                 rewards = 2 * correct - 1
 
             elif options.reward == Reward.CONF.value:
-                ppl = torch.tensor([-pred["nll"] for pred in predictions]).exp()
+                ppl = torch.tensor([-pred["nll"] for pred in predictions], device=device).exp()
                 cr_coef = options.cr_coef * anneal
                 rewards = 2 * (correct * (1 - cr_coef) + ppl * cr_coef) - 1
             elif options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
@@ -121,25 +121,31 @@ class TrainSeqRAG:
     def get_returns(self, batch: CollatedBatch, options: TrainOptions, anneal: float = 1.0, train: bool = False, generator=None, dataset_config=None):
         # Calculate rewards and returns for batch - rewards given at eos actions
         batch_size, max_seq_len = batch["example_encodings"].shape[:2]
+        rewards = torch.zeros((batch_size, max_seq_len), device=device)
 
+        # Compute rewards
         if train and options.int_reward_margin:
             # Compute returns as discounted marginal rewards
-            rewards = torch.zeros((batch_size, max_seq_len), device=device)
-            returns = torch.zeros((batch_size, max_seq_len), device=device)
-
-            cur_rewards, _ = self.get_rewards(batch, options, device, step=None, generator=self.generator, dataset_config=self.dataset_config)
+            prev_rewards, _ = self.get_rewards(batch, options, device, step=None, generator=self.generator, dataset_config=self.dataset_config)
             for step in range(max_seq_len - 1):
-                new_rewards, correct = self.get_rewards(batch, options, device, step=step, generator=self.generator, dataset_config=self.dataset_config)
-                rewards[:, step] = new_rewards
-                marginal_rewards = new_rewards - cur_rewards
-                returns[:, step] = marginal_rewards * options.gamma ** step
-                cur_rewards = new_rewards
+                cur_rewards, correct = self.get_rewards(batch, options, device, step=step, generator=self.generator, dataset_config=self.dataset_config)
+                marginal_rewards = cur_rewards - prev_rewards
+                rewards[:, step] = marginal_rewards
+                prev_rewards = cur_rewards
+        elif train and options.int_reward:
+            for step in range(max_seq_len - 1):
+                step_rewards, correct = self.get_rewards(batch, options, device, step=step, generator=self.generator, dataset_config=self.dataset_config)
+                rewards[:, step] = step_rewards
+            rewards[:, -1] = step_rewards
         else:
             # Just compute the final reward
             final_rewards, correct = self.get_rewards(batch, options, device, anneal, max_seq_len - 2, generator, dataset_config)
-            rewards = torch.zeros((batch_size, max_seq_len), device=device)
             rewards[torch.arange(batch_size), batch["seq_len"] - 1] = final_rewards
-            returns = rewards.clone()
+        
+        # Compute discounted returns from rewards
+        returns = rewards.clone()
+        for idx in range(max_seq_len - 2, -1, -1):
+            returns[:, idx] += options.gamma * returns[:, idx + 1]
         returns = returns.view(-1)
         return returns, rewards, correct
 
