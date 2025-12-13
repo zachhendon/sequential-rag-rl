@@ -5,16 +5,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-from tqdm import tqdm
 import wandb
-# import nltk
+import re
 
 from reticl.models.retriever import retriever_model, Retriever
 from reticl.models.generator import VLLMGenerator
 from reticl.data_loading.data_types import DatasetConfig
 from reticl.data_loading.reticl_dataset import RetICLDataset, Collator, CollatedBatch, filter_batch
 from reticl.training.replay_buffer import ReplayBuffer
-from reticl.evaluate import evaluate_reticl
 from reticl.constants import SamplingMethod, RLAlgorithm, Reward, LRSchedule
 from reticl.utils import TrainOptions, device, is_pg
 
@@ -22,6 +20,51 @@ class TrainSeqRAG:
     def __init__(self, generator: VLLMGenerator, dataset_config: DatasetConfig):
         self.generator = generator
         self.dataset_config = dataset_config
+    
+    def _construct_judge_prompts(self, batch: CollatedBatch, predictions: List[dict]):
+        prompts = []
+        for meta, pred in zip(batch["meta_data"], predictions):
+            # TODO: assumes GSM8K dataset for now
+            question = meta["question"]
+            answer = meta["answer"]
+            model_response = pred["text"]
+            prompt = (
+                f"### Role\n"
+                f"You are an expert evaluator for a question answering system\n\n"
+                f"### Instructions\n"
+                f"Your task is to evaluate the model response based on the user question, the correct answer, and the model response and give a score between 0 and 100. "
+                f"100 is the highest score and reflects a perfect answer with perfect reasoning. "
+                f"0 is the lowest score and reflects a completely incorrect answer with no progress towards the correct answer. "
+                f"A score of 50 is a mediocre score and reflects an answer that is partially correct with some key mistakes. "
+                f"The model should aim to get the correct final answer and logiclly explain every step accurately.\n\n"
+                f"### Output format\n"
+                f"Your response should consist of only these two sections: reasoning and score. The response should end once you have provided the final score. "
+                f"Your reasoning should be focused and logical. The score should be solely based on the accuracy and reasoning of the response and no other factors.\n"
+                f"1. Reasoning: Explain your thinking process and explain what the model did well and what it did poorly. "
+                f"During the reasoning process, you should generate a score and then explain your reasoning for that score. "
+                f"Explain why you gave the response that specific score and why it is not higher or lower. Try to keep the reasoning concise and to the point.\n"
+                f"2. Score: Give a final score between 0 and 100 based on the reasoning. "
+                f"The output format of the score should be a single integer between 0 and 100 and it should be wrapped in <score> tags. "
+                f"Examples: <score>90</score>, <score>0</score>, <score>40</score>\n"
+                f"3. Output verification: Verify that you have provided a score for the response and that it is wrapped in <score> tags.\n\n"
+                f"### Input data\n"
+                f"User question: {question}\n"
+                f"Correct answer: {answer}\n"
+                f"Model response: {model_response}\n\n"
+                f"### Evaluation\n"
+            )
+            prompts.append(prompt)
+        return prompts
+    
+    def _extract_judge_score(self, response: str):
+        score_match = re.findall(r"<score>(\d+)</score>", response["text"])
+        if len(score_match) > 0:
+            score = int(score_match[-1]) # extract the last score if there are multiple
+        else:
+            score = 50
+        if score > 100 or score < 0:
+            score = 50
+        return (score - 50) / 50
 
     def get_predictions(self, batch: CollatedBatch, step: int = None, generator=None, dataset_config=None):
         # Generate predictions given retrieved context and check correctness
@@ -32,10 +75,9 @@ class TrainSeqRAG:
             predictions = batch["outputs"]
         else:
             if step is None:
-                prompts = batch["prompts"]
+                prompts = batch["first_prompts"]
             else:
                 prompts = [sub_prompts[step] for sub_prompts in batch["sub_prompts"]]
-            # predictions = Generator.generate(prompts)
             predictions = generator.generate(prompts)
         if dataset_config.get("check_correct_batch"):
             correct = dataset_config["check_correct_batch"](
@@ -47,60 +89,64 @@ class TrainSeqRAG:
             ])
         return predictions, correct
 
-    def get_rewards(self, batch: CollatedBatch, options: TrainOptions, anneal: float = 1.0, step: int = None, generator=None, dataset_config=None):
+    def get_rewards(self, batch: CollatedBatch, options: TrainOptions, device: torch.device, anneal: float = 1.0, step: int = None, generator=None, dataset_config=None):
         rewards = None
 
-        if options.reward in (Reward.EXACT.value, Reward.CONF.value, Reward.EXACT_AND_BLEU.value):
+        if options.reward in (Reward.EXACT.value, Reward.CONF.value, Reward.EXACT_AND_BLEU.value, Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
             predictions, correct = self.get_predictions(batch, step, generator, dataset_config)
+            correct = correct.to(device)
 
             if options.reward == Reward.EXACT.value:
                 # Reward is 1 if prediction is correct, -1 otherwise
                 rewards = 2 * correct - 1
 
             elif options.reward == Reward.CONF.value:
-                ppl = torch.tensor([-pred["nll"] for pred in predictions]).exp()
+                ppl = torch.tensor([-pred["nll"] for pred in predictions], device=device).exp()
                 cr_coef = options.cr_coef * anneal
                 rewards = 2 * (correct * (1 - cr_coef) + ppl * cr_coef) - 1
+            elif options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
+                judge_prompts = self._construct_judge_prompts(batch, predictions)
+                judge_responses = self.generator.generate(judge_prompts)
+                judge_scores = [self._extract_judge_score(response) for response in judge_responses]
+                rewards = torch.tensor(judge_scores).to(device)
 
-            # elif options.reward == Reward.EXACT_AND_BLEU.value:
-            #     # Calculate bleu score on the generated solutions
-            #     bleu = torch.Tensor([
-            #         nltk.translate.bleu([target], pred["text"])
-            #         for pred, target in zip (predictions, batch["labels"])
-            #     ])
-            #     # Half of reward comes from bleu and other half from final correctness
-            #     rewards = correct + bleu - 1
-
-        # Reward is inverse perplexity assigned to label given the context
-        # elif options.reward == Reward.PPL.value:
-        #     nlls = Generator.get_nll(**batch)
-        #     rewards = 2 * torch.exp(-nlls) - 1
-        #     correct = None
-
+                if options.reward == Reward.JUDGE_EXACT.value:
+                    # Take a weighted average ofthe judge score and the correct reward
+                    cr_coef = options.cr_coef * anneal
+                    correct_rewards = 2 * correct - 1
+                    rewards = correct_rewards * (1 - cr_coef) + rewards * cr_coef
+            rewards = rewards.to(device)
         return rewards, correct
 
     def get_returns(self, batch: CollatedBatch, options: TrainOptions, anneal: float = 1.0, train: bool = False, generator=None, dataset_config=None):
         # Calculate rewards and returns for batch - rewards given at eos actions
         batch_size, max_seq_len = batch["example_encodings"].shape[:2]
-        final_rewards, correct = self.get_rewards(batch, options, anneal, None, generator, dataset_config) # (N)
-        rewards = torch.zeros((batch_size, max_seq_len), device=device) # (N x L)
-        rewards[torch.arange(batch_size), batch["seq_len"] - 1] = final_rewards.to(device)
-        # Optionally prompt at each step to get intermediate rewards
-        if (train and options.int_reward_multi) or options.int_reward_sim:
-            sub_reward_coef = anneal / options.num_examples
+        rewards = torch.zeros((batch_size, max_seq_len), device=device)
+
+        # Compute rewards
+        if train and options.int_reward_margin:
+            # Compute returns as discounted marginal rewards
+            prev_rewards, _ = self.get_rewards(batch, options, device, step=None, generator=self.generator, dataset_config=self.dataset_config)
             for step in range(max_seq_len - 1):
-                sub_batch_mask = step < batch["seq_len"] - 1
-                sub_batch = filter_batch(batch, sub_batch_mask)
-                if train and options.int_reward_multi:
-                    sub_rewards, _ = self.get_rewards(sub_batch, options, anneal, step, generator, dataset_config)
-                    rewards[sub_batch_mask, step] += sub_reward_coef * sub_rewards.to(device)
-                if options.int_reward_sim:
-                    sim_rewards = 2 * sub_batch["example_similarity"][:, step] - 1
-                    rewards[sub_batch_mask, step] += sub_reward_coef * sim_rewards
+                cur_rewards, correct = self.get_rewards(batch, options, device, step=step, generator=self.generator, dataset_config=self.dataset_config)
+                marginal_rewards = cur_rewards - prev_rewards
+                rewards[:, step] = marginal_rewards
+                prev_rewards = cur_rewards
+        elif train and options.int_reward:
+            for step in range(max_seq_len - 1):
+                step_rewards, correct = self.get_rewards(batch, options, device, step=step, generator=self.generator, dataset_config=self.dataset_config)
+                rewards[:, step] = step_rewards
+            rewards[:, -1] = step_rewards
+        else:
+            # Just compute the final reward
+            final_rewards, correct = self.get_rewards(batch, options, device, anneal, max_seq_len - 2, generator, dataset_config)
+            rewards[torch.arange(batch_size), batch["seq_len"] - 1] = final_rewards
+        
+        # Compute discounted returns from rewards
         returns = rewards.clone()
         for idx in range(max_seq_len - 2, -1, -1):
             returns[:, idx] += options.gamma * returns[:, idx + 1]
-        returns = returns.view(-1) # (N * L)
+        returns = returns.view(-1)
         return returns, rewards, correct
 
     def get_td_error(self, value_estimates: torch.Tensor, rewards: torch.Tensor, options: TrainOptions):
@@ -169,8 +215,10 @@ class TrainSeqRAG:
             val_num_examples = 0
             val_example_set = set()
             retriever.eval()
-            print("VAL SET SIZE: ", len(val_set))
-            self.generator.reset_pbar(len(val_set), "Validation")
+            pbar_len = len(val_set)
+            if options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
+                pbar_len = len(val_set) * 2
+            self.generator.reset_pbar(pbar_len, "Validation")
             for batch in val_loader:
                 for example_idx in batch["policy_example_indices"].view(-1):
                     val_example_set.add(example_idx.item())
@@ -362,7 +410,13 @@ class TrainSeqRAG:
 
             # Sample batch from dataset - example retrieval is also done here (__getitem__ in RetICLDataset)
             train_stats = self.reset_train_stats(epoch, cur_lr, supp_reward_anneal)
-            self.generator.reset_pbar(len(dataset), f"Epoch {epoch+1}/{options.epochs}")
+            if options.int_reward_margin:
+                pbar_len = len(dataset) * (options.num_examples + 1)
+            else:
+                pbar_len = len(dataset)
+            if options.reward in (Reward.JUDGE.value, Reward.JUDGE_EXACT.value):
+                pbar_len *= 2
+            self.generator.reset_pbar(pbar_len, f"Epoch {epoch+1}/{options.epochs}")
             for batch_idx, raw_batch in enumerate(data_loader):
                 retriever.train()
                 batch = collator(raw_batch)
@@ -447,8 +501,9 @@ class TrainSeqRAG:
                     ratio = cur_policy_probs / old_policy_probs
                     previous_model.load_state_dict(retriever.state_dict()) # Copy model for next iteration
 
-                    # Get estimated advantage
+                    # Get batch-normalized estimated advantage
                     advantage = self.get_gae(value_estimates, rewards, options)
+                    advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
                     # Get clip loss
                     clip_loss = -torch.min(ratio * advantage, torch.clip(ratio, 1 - options.ppo_eps, 1 + options.ppo_eps) * advantage)
@@ -652,9 +707,3 @@ class TrainSeqRAG:
                 if options.rl_algo == RLAlgorithm.DSAC.value:
                     for critic_scheduler in critic_schedulers:
                         critic_scheduler.step()
-
-        # Save and evaluate final model
-        final_model = best_model if options.save_best else retriever
-        if not options.save_best:
-            torch.save(final_model.state_dict(), f"{options.model_name}.pt")
-        evaluate_reticl(run, self.dataset_config, final_model, dev_split, options)

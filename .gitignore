@@ -1,19 +1,19 @@
 __pycache__
+.cursor
+.vscode
 *.pyc
 *.pt
 *.png
-*.ipynb
 
 wandb/
 seq/
 
 generator_cache*
 reticl_pretrain_data*
-results*
+results*.csv
 
 grade-school-math
 MATH 2
 QASC_Dataset
-results
 SVAMP
 tabmwp
