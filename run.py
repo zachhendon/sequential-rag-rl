@@ -17,7 +17,7 @@ from reticl.datasets.ag_news import AGNEWS_CONFIG
 from reticl.datasets.math import MATH_CONFIG
 from reticl.datasets.svamp import SVAMP_CONFIG
 from reticl.datasets.mtop import MTOP_CONFIG
-from reticl.models.generator import VLLMGenerator
+from reticl.models.generator import VLLMGenerator, Generator
 from reticl.constants import Datasets, RLAlgorithm, SamplingMethod, Reward, EncoderModelType, ModelType, Pooling, Init, LRSchedule
 from reticl.utils import initialize_seeds, device, TrainOptions
 
@@ -124,11 +124,12 @@ def main():
     parser.add_argument("--hidden_size", type=int, help="Hidden size for RNN")
     parser.add_argument("--sep_val_model", type=bool_type, help="Separate value model from policy model")
     # Generation
-    parser.add_argument("--generator_model", type=str, help="Name of pre-trained model for text generation. Set to 'gpt3' to use OpenAI, otherwise model is loaded from huggingface.", default="gpt3")
+    parser.add_argument("--generator_model", type=str, help="Name of pre-trained model for text generation.", default="Qwen/Qwen2.5-0.5B")
     parser.add_argument("--gpt3_model", type=str, help="Specific model when using OpenAI for generation", default="code-davinci-002")
     parser.add_argument("--gen_batch_size", type=int, help="Batch size for generator")
     parser.add_argument("--max_gen_tokens", type=int, help="Maximum number of tokens to generate")
     parser.add_argument("--beam_width", type=int, help="Beam search width for inference time policy example retrieval")
+    parser.add_argument("--gpu_memory_utilization", type=float, help="GPU memory utilization for vLLM (0.0-1.0). Auto-adjusted based on model size if not specified.")
     # Misc
     parser.add_argument("--wandb", action="store_true", help="Use Weights & Biases for logging")
     parser.add_argument("--rseed", type=int, help="Random seed", default=221)
@@ -142,19 +143,23 @@ def main():
     torch.use_deterministic_algorithms(args.deterministic, warn_only=True)
 
     dataset_config = get_dataset_config(arg_dict)
+    
+    # Initialize the Generator for any mode that needs it
     if args.train or args.eval or args.create_pretrain_dataset:
-        # with GeneratorCM(arg_dict): # Load/save generator prediction cache on program start/exit
-        # with VLLMGeneratorCM(arg_dict):
-        #     if args.train:
-        #         train_reticl(dataset_config, "train", "dev", arg_dict)
-        #     if args.eval:
-        #         evaluate(dataset_config, args.eval, arg_dict)
-        #     if args.create_pretrain_dataset:
-        #         collect_samples(args.create_pretrain_dataset, dataset_config, arg_dict)
-        generator = VLLMGenerator(arg_dict)
+        # Initialize the global Generator instance
+        Generator.initialize(arg_dict)
+        generator = Generator.get_instance()
+        
         if args.train:
             trainer = TrainSeqRAG(generator, dataset_config)
             trainer.train("train", "dev", arg_dict)
+        
+        if args.eval:
+            evaluate(dataset_config, args.eval, arg_dict)
+        
+        if args.create_pretrain_dataset:
+            collect_samples(args.create_pretrain_dataset, dataset_config, arg_dict)
+    
     if args.pretrain:
         pretrain_reticl(dataset_config, arg_dict)
     if args.finetune_gpt2:

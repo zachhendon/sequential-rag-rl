@@ -32,6 +32,7 @@ class TrainOptions:
         self.generator_model: str = options_dict.get("generator_model", "mistralai/Mistral-7B-v0.1")
         self.gpt3_model: str = options_dict.get("gpt3_model", "code-davinci-002")
         self.gen_batch_size: int = options_dict.get("gen_batch_size", 0)
+        self.gpu_memory_utilization: Optional[float] = options_dict.get("gpu_memory_utilization", None)
         self.encoder_model_type: str = options_dict.get("encoder_model_type", EncoderModelType.SBERT.value)
         self.encoder_model: str = options_dict.get("encoder_model", None)
         self.encoder_h: int = options_dict.get("encoder_h", 0)

@@ -7,13 +7,13 @@ import pandas
 import numpy as np
 
 from reticl.models.retriever import Retriever, retriever_model
-from reticl.models.generator import Generator
+from reticl.models.generator import VLLMGenerator
 from reticl.data_loading.data_types import DatasetConfig
 from reticl.data_loading.reticl_dataset import RetICLDataset, Collator
 from reticl.constants import Datasets, SamplingMethod
 from reticl.utils import TrainOptions, device
 
-def exhaustive_eval(dataset: RetICLDataset, dataset_config: DatasetConfig, options: TrainOptions):
+def exhaustive_eval(dataset: RetICLDataset, dataset_config: DatasetConfig, options: TrainOptions, generator: VLLMGenerator):
     # Get maximum possible performance
     prompts: List[str] = []
     labels: List[str] = []
@@ -41,7 +41,7 @@ def exhaustive_eval(dataset: RetICLDataset, dataset_config: DatasetConfig, optio
         all_prompt_cands = get_all_prompts("", 0)
         for prompt_idx in range(0, len(all_prompt_cands), options.batch_size):
             prompt_cands = all_prompt_cands[prompt_idx : prompt_idx + options.batch_size]
-            pred_cands = [pred["text"] for pred in Generator.generate(prompts=prompt_cands)]
+            pred_cands = [pred["text"] for pred in generator.generate(prompt_cands)]
             if dataset_config.get("check_correct_batch"):
                 correct = dataset_config["check_correct_batch"]([meta_datas[-1]] * len(pred_cands), pred_cands).tolist()
             else:
@@ -59,7 +59,7 @@ def exhaustive_eval(dataset: RetICLDataset, dataset_config: DatasetConfig, optio
 
     return prompts, labels, meta_datas, preds, example_set, 1
 
-def policy_eval(dataset: RetICLDataset, options: TrainOptions):
+def policy_eval(dataset: RetICLDataset, options: TrainOptions, generator: VLLMGenerator):
     prompts: List[str] = []
     labels: List[str] = []
     meta_datas: List[dict] = []
@@ -81,7 +81,7 @@ def policy_eval(dataset: RetICLDataset, options: TrainOptions):
         labels += batch["labels"]
         meta_datas += batch["meta_data"]
         total_examples += (batch["seq_len"] - 1).sum().item()
-        for pred in Generator.generate(**batch):
+        for pred in generator.generate(batch["prompts"]):
             preds.append(pred["text"])
 
     return prompts, labels, meta_datas, preds, example_set, total_examples / len(dataset)
@@ -95,11 +95,14 @@ def evaluate_reticl(run, dataset_config: DatasetConfig, retriever: Optional[Retr
         dataset = RetICLDataset(dataset_config, split, retriever, options)
         dataset.set_greedy(True) # Use greedy sampling for policy-based example retrieval
 
+        # Create generator instance
+        generator = VLLMGenerator(options.as_dict())
+
         # Collect predictions and labels over the dataset
         if options.sm == SamplingMethod.EXHAUSTIVE.value:
-            prompts, labels, meta_datas, preds, example_set, examples_per = exhaustive_eval(dataset, dataset_config, options)
+            prompts, labels, meta_datas, preds, example_set, examples_per = exhaustive_eval(dataset, dataset_config, options, generator)
         else:
-            prompts, labels, meta_datas, preds, example_set, examples_per = policy_eval(dataset, options)
+            prompts, labels, meta_datas, preds, example_set, examples_per = policy_eval(dataset, options, generator)
 
         if dataset_config.get("check_correct_batch"):
             correct = dataset_config["check_correct_batch"](meta_datas, preds).numpy()
