@@ -1,0 +1,18 @@
+generator_model,judge_coef,accuracy,test_examples,int_reward_margin,reward
+Qwen-1.5B,0.0,0.5648,3,True,judge_exact
+Qwen-1.5B,0.2,0.5337,3,True,judge_exact
+Qwen-1.5B,0.4,0.5262,3,True,judge_exact
+Qwen-1.5B,0.6,0.4966,5,True,judge_exact
+Qwen-1.5B,0.8,0.4981,3,True,judge_exact
+Qwen-1.5B,1.0,0.4572,4,True,judge_exact
+Qwen-0.5B,0.0,0.1782,3,True,judge_exact
+Qwen-0.5B,0.2,0.1948,25,True,judge_exact
+Qwen-0.5B,0.4,0.1782,3,True,judge_exact
+Qwen-0.5B,0.6,0.,,True,judge_exact
+Qwen-0.5B,0.8,0.1554,4,True,judge_exact
+Qwen-0.5B,1.0,0.1531,7,True, judge_exact
+Qwen-1.5B,None,0.3298,2181,False,random
+Qwen-1.5B,None,0.3252,13,False,complexity
+Qwen-1.5B,None,0.3533,1884,False,similarity
+Qwen-1.5B,None,0.7779,91,False,exhaustive
+Qwen-1.5B,None,0.5239,4,False,sparse_exact
